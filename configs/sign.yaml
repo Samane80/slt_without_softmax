@@ -59,7 +59,7 @@ training:
     batch_size: 32
     num_valid_log: 5
     epochs: 5000000
-    early_stopping_metric: eval_metric
+    early_stopping_metric: translation_loss
     batch_type: sentence
     translation_normalization: batch
     eval_recognition_beam_size: 1
@@ -79,7 +79,7 @@ training:
     scheduling: plateau
     learning_rate_min: 1.0e-07
     weight_decay: 0.001
-    patience: 8
+    patience: 15
     decrease_factor: 0.7
     label_smoothing: 0.0
 model:
