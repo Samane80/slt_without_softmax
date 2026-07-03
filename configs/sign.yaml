@@ -58,7 +58,7 @@ training:
   learning_rate: 0.001
   batch_size: 32
   num_valid_log: 5
-  epochs: 60
+  epochs: 500
   early_stopping_metric: translation_loss
   batch_type: sentence
   translation_normalization: batch

@@ -118,8 +118,6 @@ class TextVocabulary(Vocabulary):
         """
         sentence = []
         for i in array:
-            if i >= len(self.itos):
-                continue  # یا break
             s = self.itos[i]
             if cut_at_eos and s == EOS_TOKEN:
                 break

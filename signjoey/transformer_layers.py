@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
-
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
-import torch.nn.functional as F  
-# pylint: disable=arguments-differ
+
+
 class MultiHeadedAttention(nn.Module):
     """
-    Multi-Head Attention module from "Attention is All You Need"
+    نسخه‌ی FP32 (بدون کوانتیزیشن) از MultiHeadedAttention.
+    منطق دقیقا همونیه که توی نسخه‌ی کوانتیزه فیکس کردیم:
+    - focused feature map با max(abs()) بجای L2-norm
+    - causal linear attention با cumulative sum (برای self-attn دیکودر)
+    - key-padding mask (برای encoder self-attn و decoder cross-attn)
+    - DWC یک‌بعدی روی محور توالی (نه reshape مصنوعی H×W)
 
-    Implementation modified from OpenNMT-py.
-    https://github.com/OpenNMT/OpenNMT-py
+    ⚠️ اسم attribute ها (q_layer, k_layer, v_layer, output_layer, dwc) عمدا
+    دقیقا همون اسم‌های نسخه‌ی QuantLinear/QuantConv2d هستن تا بعدا
+    state_dict این مدل با strict=False روی مدل کوانتیزه لود بشه.
     """
 
     def __init__(self, dim: int, num_heads: int = 8, dropout: float = 0.0,
@@ -115,12 +121,12 @@ class MultiHeadedAttention(nn.Module):
         return output
 
 
-
-# pylint: disable=arguments-differ
 class PositionwiseFeedForward(nn.Module):
     """
-    Position-wise Feed-forward layer
-    Projects to ff_size and then back down to input_size.
+    نسخه‌ی FP32 از Mlp — اسم‌ها (pwff_layer[0], pwff_layer[3]) عمدا مطابق
+    نسخه‌ی کوانتیزه (quantization_utils/layers_quant.py) هستن.
+    IntGELU یک تقریب integer از GELU هست، پس اینجا از nn.GELU واقعی استفاده
+    می‌کنیم که معادل float آن است.
     """
 
     def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.0):
@@ -146,17 +152,12 @@ class PositionwiseFeedForward(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
-    """
-    One Transformer encoder layer has a Multi-head attention layer plus
-    a position-wise feed-forward layer.
-    """
-
     def __init__(self, dim: int, num_heads: int, ff_size: int,
                  dropout: float = 0.1, attn_drop: float = 0.1):
         super().__init__()
         self.size = dim
         self.layer_norm = nn.LayerNorm(dim, eps=1e-6)
-        self.src_src_att = MultiHeadedAttention(
+        self.src_src_att = MultiHeadedAttentionFP32(
             dim=dim, num_heads=num_heads, dropout=attn_drop,
             focusing_factor=2, kernel_size=5, is_self_attention=True,
         )
@@ -228,6 +229,3 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, emb):
         return emb + self.pe[:, :emb.size(1)]
-
-
-

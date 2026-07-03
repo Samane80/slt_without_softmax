@@ -91,7 +91,7 @@ def build_optimizer(config: dict, parameters) -> Optimizer:
             amsgrad=amsgrad,
         )
     elif optimizer_name == "adamw":
-        return torch.optim.AdamW(
+        return torch.optim.Adam(
             params=parameters,
             lr=learning_rate,
             betas=betas,
@@ -129,14 +129,6 @@ def build_optimizer(config: dict, parameters) -> Optimizer:
             params=parameters,
             lr=learning_rate,
             momentum=config.get("momentum", 0),
-            weight_decay=weight_decay,
-        )
-    elif optimizer_name == "radam":
-        return torch.optim.RAdam(
-            params=parameters,
-            lr=learning_rate,
-            betas=betas,
-            eps=eps,
             weight_decay=weight_decay,
         )
     else:
