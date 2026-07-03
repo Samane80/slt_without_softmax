@@ -8,38 +8,30 @@ from torch import Tensor
 
 class MultiHeadedAttention(nn.Module):
     """
-    نسخه‌ی FP32 (بدون کوانتیزیشن) از MultiHeadedAttention.
-    منطق دقیقا همونیه که توی نسخه‌ی کوانتیزه فیکس کردیم:
-    - focused feature map با max(abs()) بجای L2-norm
-    - causal linear attention با cumulative sum (برای self-attn دیکودر)
-    - key-padding mask (برای encoder self-attn و decoder cross-attn)
-    - DWC یک‌بعدی روی محور توالی (نه reshape مصنوعی H×W)
-
-    ⚠️ اسم attribute ها (q_layer, k_layer, v_layer, output_layer, dwc) عمدا
-    دقیقا همون اسم‌های نسخه‌ی QuantLinear/QuantConv2d هستن تا بعدا
-    state_dict این مدل با strict=False روی مدل کوانتیزه لود بشه.
+    نسخه FP32 سازگار با کد اصلی signjoey/SLT
+    اسم attributeها عمداً مثل نسخه کوانتیزه نگه داشته شده.
     """
 
-    def __init__(self, dim: int, num_heads: int = 8, dropout: float = 0.0,
+    def __init__(self, num_heads: int, size: int, dropout: float = 0.1,
                  qkv_bias=False, focusing_factor: int = 2, kernel_size: int = 5,
                  causal: bool = False, is_self_attention: bool = True):
         super().__init__()
         self.num_heads = num_heads
-        self.head_size = dim // num_heads
-        self.dim = dim
+        self.head_size = size // num_heads
+        self.dim = size
         self.focusing_factor = focusing_factor
         self.causal = causal
         self.is_self_attention = is_self_attention
 
-        self.q_layer = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k_layer = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v_layer = nn.Linear(dim, dim, bias=qkv_bias)
-        self.output_layer = nn.Linear(dim, dim)
+        # اسم attributeها دقیقاً مثل نسخه Quant
+        self.q_layer = nn.Linear(size, size, bias=qkv_bias)
+        self.k_layer = nn.Linear(size, size, bias=qkv_bias)
+        self.v_layer = nn.Linear(size, size, bias=qkv_bias)
+        self.output_layer = nn.Linear(size, size)
 
         self.attn_drop = nn.Dropout(dropout)
         self.proj_drop = nn.Dropout(dropout)
 
-        # همون کرنل (1,k) روی محور توالی — نه grid دوبعدی مصنوعی
         self.dwc = nn.Conv2d(
             self.head_size, self.head_size, kernel_size=(1, kernel_size),
             padding=(0, kernel_size // 2), groups=self.head_size, bias=True
@@ -57,7 +49,7 @@ class MultiHeadedAttention(nn.Module):
         if key is None:
             key = query
         if value is None:
-            value = key
+            value = query   # مهم برای سازگاری با فراخوانی قدیمی
 
         B, Nq, C = query.shape
         Nk = key.shape[1]
@@ -73,7 +65,7 @@ class MultiHeadedAttention(nn.Module):
         q = self._focused_map(q)
         k = self._focused_map(k)
 
-        # ── Key-padding mask (فقط برای حالت غیر-causal) ────────────────
+        # Key-padding mask
         key_valid_mask = None
         if mask is not None and not self.causal:
             key_valid_mask = mask
@@ -84,7 +76,6 @@ class MultiHeadedAttention(nn.Module):
             v = v * key_valid_mask
 
         if self.causal:
-            # causal linear attention با prefix-sum روی محور توالی
             kv = torch.einsum("bhnd,bhne->bhnde", k, v)
             kv_cumsum = torch.cumsum(kv, dim=2)
             context = torch.einsum("bhnd,bhnde->bhne", q, kv_cumsum)
@@ -92,7 +83,7 @@ class MultiHeadedAttention(nn.Module):
             k_cumsum = torch.cumsum(k, dim=2)
             z = torch.einsum("bhnd,bhnd->bhn", q, k_cumsum).unsqueeze(-1)
         else:
-            kv = torch.einsum("bhnd,bhne->bhde", k, v)  # جمع سراسری روی Nk
+            kv = torch.einsum("bhnd,bhne->bhde", k, v)
             context = torch.einsum("bhnd,bhde->bhne", q, kv)
 
             if key_valid_mask is not None:
@@ -122,24 +113,14 @@ class MultiHeadedAttention(nn.Module):
 
 
 class PositionwiseFeedForward(nn.Module):
-    """
-    نسخه‌ی FP32 از Mlp — اسم‌ها (pwff_layer[0], pwff_layer[3]) عمدا مطابق
-    نسخه‌ی کوانتیزه (quantization_utils/layers_quant.py) هستن.
-    IntGELU یک تقریب integer از GELU هست، پس اینجا از nn.GELU واقعی استفاده
-    می‌کنیم که معادل float آن است.
-    """
-
-    def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.0):
+    def __init__(self, input_size: int, ff_size: int, dropout: float = 0.1):
         super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-
         self.pwff_layer = nn.ModuleList([
-            nn.Linear(in_features, hidden_features),   # [0]
-            nn.GELU(),                                  # [1]
-            nn.Dropout(drop),                            # [2]
-            nn.Linear(hidden_features, out_features),   # [3]
-            nn.Dropout(drop),                            # [4]
+            nn.Linear(input_size, ff_size),   # [0]
+            nn.GELU(),                        # [1]
+            nn.Dropout(dropout),              # [2]
+            nn.Linear(ff_size, input_size),   # [3]
+            nn.Dropout(dropout),              # [4]
         ])
 
     def forward(self, x):
@@ -152,66 +133,59 @@ class PositionwiseFeedForward(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, dim: int, num_heads: int, ff_size: int,
-                 dropout: float = 0.1, attn_drop: float = 0.1):
+    def __init__(self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1):
         super().__init__()
-        self.size = dim
-        self.layer_norm = nn.LayerNorm(dim, eps=1e-6)
-        self.src_src_att = MultiHeadedAttentionFP32(
-            dim=dim, num_heads=num_heads, dropout=attn_drop,
-            focusing_factor=2, kernel_size=5, is_self_attention=True,
+        self.size = size
+        self.layer_norm = nn.LayerNorm(size, eps=1e-6)
+        self.src_src_att = MultiHeadedAttention(
+            num_heads=num_heads, size=size, dropout=dropout,
+            focusing_factor=2, kernel_size=5, is_self_attention=True
         )
         self.feed_forward = PositionwiseFeedForward(
-            in_features=dim, hidden_features=ff_size, drop=dropout
+            input_size=size, ff_size=ff_size, dropout=dropout
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, mask=None):
-        residual = x
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
         x_norm = self.layer_norm(x)
-        x_att = self.src_src_att(x_norm, mask=mask)
-        x = residual + self.dropout(x_att)
-
-        residual = x
-        x_ff = self.feed_forward(x)
-        x = residual + self.dropout(x_ff)
-        return x
+        h = self.src_src_att(x_norm, x_norm, x_norm, mask)
+        h = self.dropout(h) + x
+        o = self.feed_forward(h)
+        return o
 
 
 class TransformerDecoderLayer(nn.Module):
-    def __init__(self, size: int, ff_size: int, num_heads: int, dropout: float = 0.1):
+    def __init__(self, size: int = 0, ff_size: int = 0, num_heads: int = 0, dropout: float = 0.1):
         super().__init__()
         self.size = size
         self.trg_trg_att = MultiHeadedAttention(
-            dim=size, num_heads=num_heads, dropout=dropout,
-            focusing_factor=2, causal=True, is_self_attention=True,
+            num_heads=num_heads, size=size, dropout=dropout,
+            focusing_factor=2, causal=True, is_self_attention=True
         )
         self.src_trg_att = MultiHeadedAttention(
-            dim=size, num_heads=num_heads, dropout=dropout,
-            focusing_factor=2, is_self_attention=False,
+            num_heads=num_heads, size=size, dropout=dropout,
+            focusing_factor=2, is_self_attention=False
         )
         self.feed_forward = PositionwiseFeedForward(
-            in_features=size, hidden_features=ff_size, drop=dropout
+            input_size=size, ff_size=ff_size, dropout=dropout
         )
         self.x_layer_norm = nn.LayerNorm(size, eps=1e-6)
         self.dec_layer_norm = nn.LayerNorm(size, eps=1e-6)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, memory, src_mask=None, trg_mask=None):
-        residual = x
+    def forward(self, x: Tensor, memory: Tensor, src_mask: Tensor = None, trg_mask: Tensor = None):
+        # decoder self-attention
         x_norm = self.x_layer_norm(x)
-        x_att = self.trg_trg_att(query=x_norm, key=x_norm, value=x_norm, mask=trg_mask)
-        x = residual + self.dropout(x_att)
+        h1 = self.trg_trg_att(x_norm, x_norm, x_norm, mask=trg_mask)
+        h1 = self.dropout(h1) + x
 
-        residual = x
-        x_norm = self.dec_layer_norm(x)
-        x_att = self.src_trg_att(query=x_norm, key=memory, value=memory, mask=src_mask)
-        x = residual + self.dropout(x_att)
+        # source attention
+        h1_norm = self.dec_layer_norm(h1)
+        h2 = self.src_trg_att(h1_norm, memory, memory, mask=src_mask)
 
-        residual = x
-        x_ff = self.feed_forward(x)
-        x = residual + self.dropout(x_ff)
-        return x
+        # feed-forward
+        o = self.feed_forward(self.dropout(h2) + h1)
+        return o
 
 
 class PositionalEncoding(nn.Module):
