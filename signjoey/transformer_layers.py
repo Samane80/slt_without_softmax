@@ -4,8 +4,7 @@ import math
 import torch
 import torch.nn as nn
 from torch import Tensor
-
-
+import torch.nn.functional as F  
 # pylint: disable=arguments-differ
 class MultiHeadedAttention(nn.Module):
     """
