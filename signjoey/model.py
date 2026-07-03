@@ -10,8 +10,8 @@ import torch.nn.functional as F
 from itertools import groupby
 from signjoey.initialization import initialize_model
 from signjoey.embeddings import Embeddings, SpatialEmbeddings
-from signjoey.encoders import Encoder, RecurrentEncoder, TransformerEncoder
-from signjoey.decoders import Decoder, RecurrentDecoder, TransformerDecoder
+from signjoey.encoders import Encoder, TransformerEncoder
+from signjoey.decoders import Decoder, TransformerDecoder
 from signjoey.search import beam_search, greedy
 from signjoey.vocabulary import (
     TextVocabulary,
