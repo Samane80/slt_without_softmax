@@ -117,7 +117,7 @@ def transformer_greedy(src_mask, embed, bos_index, eos_index, max_output_length,
     return ys.detach().cpu().numpy(), None
 
 
-def greedy_fp32(src_mask, embed, bos_index, eos_index, max_output_length,
+def greedy(src_mask, embed, bos_index, eos_index, max_output_length,
                  decoder, encoder_output, encoder_hidden):
     # فقط دیکودر ترنسفورمری پشتیبانی می‌شود (چون سناریوی این پروژه transformer است)
     return transformer_greedy(
