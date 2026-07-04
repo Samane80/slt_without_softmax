@@ -15,12 +15,23 @@ class MultiHeadedAttention(nn.Module):
     https://github.com/OpenNMT/OpenNMT-py
     """
 
-    def __init__(self, num_heads: int, size: int, dropout: float = 0.1):
+    def __init__(
+        self,
+        num_heads: int,
+        size: int,
+        dropout: float = 0.1,
+        focusing_factor: int = 3,
+    ):
         """
         Create a multi-headed attention layer.
         :param num_heads: the number of heads
         :param size: model size (must be divisible by num_heads)
         :param dropout: probability of dropping a unit
+        :param focusing_factor: power "p" used in the Focused Function
+            fp(x) = (||x|| / ||x**p||) * x**p, proposed in "FLatten
+            Transformer: Vision Transformer using Focused Linear
+            Attention". This replaces the original Softmax similarity
+            with a kernel-based (linear-attention-style) similarity.
         """
         super(MultiHeadedAttention, self).__init__()
 
@@ -38,9 +49,44 @@ class MultiHeadedAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
 
+        # Focused Linear Attention: replaces the Softmax similarity
+        # Sim(Q, K) = exp(QK^T / sqrt(d)) with a kernel similarity
+        # Sim(Q, K) = phi_p(Q) phi_p(K)^T, where phi_p sharpens the
+        # direction of Q/K using a norm-based "focused function"
+        # while preserving their original norm.
+        self.focusing_factor = focusing_factor
+        self.eps = 1e-6
+
+    def _focused_function(self, x: Tensor) -> Tensor:
+        """
+        Focused Function fp(.) from the Focused Linear Attention paper:
+
+            phi_p(x) = fp(ReLU(x))
+            fp(x)    = (||x|| / ||x**p||) * x**p
+
+        ReLU ensures non-negativity (needed for a valid linear-attention
+        kernel and for the denominator in the normalization below).
+        The mapping only adjusts the *direction* of x: the norm of the
+        output equals the norm of ReLU(x), i.e. ||fp(x)|| = ||ReLU(x)||.
+
+        :param x: input tensor, e.g. projected queries or keys
+        :return: direction-sharpened tensor with the same shape as x
+        """
+        x = torch.relu(x)
+        x_norm = x.norm(dim=-1, keepdim=True)
+        x_pow = x.pow(self.focusing_factor)
+        x_pow_norm = x_pow.norm(dim=-1, keepdim=True) + self.eps
+        return x_norm * x_pow / x_pow_norm
+
     def forward(self, k: Tensor, v: Tensor, q: Tensor, mask: Tensor = None):
         """
-        Computes multi-headed attention.
+        Computes multi-headed Focused Linear Attention.
+
+        Instead of the original Softmax attention, the similarity between
+        queries and keys is computed with the Focused Function (see
+        `_focused_function`) and the attention weights are obtained by
+        normalizing this similarity over the row-sum, instead of applying
+        Softmax.
 
         :param k: keys   [B, M, D] with M being the sentence length.
         :param v: values [B, M, D]
@@ -61,19 +107,23 @@ class MultiHeadedAttention(nn.Module):
         v = v.view(batch_size, -1, num_heads, self.head_size).transpose(1, 2)
         q = q.view(batch_size, -1, num_heads, self.head_size).transpose(1, 2)
 
-        # compute scores
-        q = q / math.sqrt(self.head_size)
+        # compute the Focused Function mapping (replaces the softmax scaling)
+        q = self._focused_function(q)
+        k = self._focused_function(k)
 
         # batch x num_heads x query_len x key_len
         scores = torch.matmul(q, k.transpose(2, 3))
 
         # apply the mask (if we have one)
         # we add a dimension for the heads to it below: [B, 1, 1, M]
+        # Note: since we no longer use Softmax, masked-out positions are
+        # filled with 0 (not -inf) so they don't contribute to the sum.
         if mask is not None:
-            scores = scores.masked_fill(~mask.unsqueeze(1), float("-inf"))
+            scores = scores.masked_fill(~mask.unsqueeze(1), 0.0)
 
-        # apply attention dropout and compute context vectors.
-        attention = self.softmax(scores)
+        # normalize the kernel similarity by its row-sum (instead of Softmax)
+        # and compute context vectors.
+        attention = scores / (scores.sum(dim=-1, keepdim=True) + self.eps)
         attention = self.dropout(attention)
 
         # get context vector (select values with attention) and reshape
