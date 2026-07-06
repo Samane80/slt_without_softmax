@@ -550,10 +550,10 @@ class TransformerDecoderLayer(nn.Module):
         self.size = size
 
         self.trg_trg_att = SoftmaxMultiHeadedAttention(
-            num_heads, size, dropout=dropout, self_attention=True
+            num_heads, size, dropout=dropout
         )
         self.src_trg_att = SoftmaxMultiHeadedAttention(
-            num_heads, size, dropout=dropout, self_attention=False
+            num_heads, size, dropout=dropout
         )
 
         self.feed_forward = PositionwiseFeedForward(
